@@ -14,46 +14,69 @@ from typing import Any
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 PLACEHOLDER_RE = re.compile(r"\[(?:待填|待确认|待补充|待试写确认后填入)[^\]\n]*\]|\{\{[^{}\n]+\}\}")
-FORBIDDEN_TITLE_CHARS_RE = re.compile(r"[《》<>\s]")
-ASSET_CODE_CLEAN_RE = re.compile(r"`?(?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop|voice_char)_\d+|(?:CHAR|SCENE|PROP|SVG-DOLL|FACE)-\d+)`?\s*")
+FORBIDDEN_TITLE_CHARS_RE = re.compile(r"[《》<>【】\[\]\s]")
+FORBIDDEN_TITLE_HYPE_RE = re.compile(r"(?:爆款|绝密|最强|第一|逆天|秒杀|热播)")
+ASSET_CODE_CLEAN_RE = re.compile(
+    r"`?(?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop|voice_char)_\d+|(?:CHAR|SCENE|PROP|VOICE|SVG-DOLL|FACE)-\d+)`?\s*"
+)
 CAMERA_PREFIX_RE = re.compile(
     r"^(?:竖屏|横屏)?(?:极特写|大特写|特写|近景|中近景|中景|全景|远景|俯拍|仰拍|过肩镜头?|正面|反打)(?:[（(][A-Za-z0-9/+\-\s]+[）)])?[，,、：:\s]*"
 )
+FOLEY_CLAUSE_START_RE = re.compile(r"^[\[【](?:环境音|音效|Foley|BGM|魔性音效|配乐)[^\]】]*[\]】]", re.I)
+INLINE_FOLEY_TO_SPEAKER_RE = re.compile(
+    r"^[\[【](?:环境音|音效|Foley|BGM|魔性音效|配乐)[^\]】]*[\]】][^“「\"；;]*?[，,、\s]+"
+    r"(?=(?:`?(?:@CHAR-\d+|@VOICE-\d+|char_\d+|voice_char_\d+|CHAR-\d+|voice_narrator)`?"
+    r"|画外[^\s：:；;，,（(]{1,10}|旁白|[\u4e00-\u9fff]{1,6})(?:\s*[（(][^）)\n]{1,20}[）)])?\s*[：:])",
+    re.I,
+)
 
 CN_NUMS = "零一二三四五六七八九"
+EXCLUDED_SCRIPT_STEMS = {"00_季播总案与资产表", "01_分集卡点纲", "readme", "license"}
 
 
 def load_asset_name_map(root: Path, explicit_bible: Path | None = None) -> dict[str, str]:
-    """Parse character/voice/scene ID -> readable Chinese name from bible markdown tables if present."""
+    """Parse character/voice/scene/prop ID -> readable Chinese name from bible markdown tables."""
     candidates: list[Path] = []
     if explicit_bible:
         candidates.append(explicit_bible.expanduser().resolve())
     candidates.extend(
         [
             root / "00_季播总案与资产表.md",
+            root.parent / "00_季播总案与资产表.md",
             root / "01_bible" / "series_bible.md",
+            root.parent / "01_bible" / "series_bible.md",
             root / "series_bible.md",
         ]
     )
     mapping: dict[str, str] = {"voice_narrator": "旁白"}
-    row_re = re.compile(r"^\|\s*`?((?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop)_\d+|(?:CHAR|SCENE|PROP)-\d+))`?\s*\|\s*([^|]+)\|")
-    voice_in_row_re = re.compile(r"`?(voice_char_\d+|@VOICE-\d+)`?")
+    row_re = re.compile(
+        r"^\|\s*`?((?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop|voice_char)_\d+|(?:CHAR|SCENE|PROP|VOICE)-\d+))`?\s*\|\s*([^|]+)\|"
+    )
+    voice_in_row_re = re.compile(r"`?(voice_char_\d+|@VOICE-\d+|VOICE-\d+)`?")
+    seen: set[Path] = set()
     for cand in candidates:
-        if not cand.is_file():
+        resolved = cand.resolve()
+        if resolved in seen or not resolved.is_file():
             continue
-        text = cand.read_text(encoding="utf-8-sig")
+        seen.add(resolved)
+        text = resolved.read_text(encoding="utf-8-sig", errors="replace")
         for line in text.splitlines():
             m = row_re.match(line.strip())
             if not m:
                 continue
             code = m.group(1).strip()
             raw_name = strip_md_inline(m.group(2)).strip()
-            # Keep clean Chinese/display name before slash or parenthetical role note if concise
             name = re.split(r"[（(/｜|]", raw_name)[0].strip()
             if not name or name.startswith("[待填"):
                 continue
+            # Do not overwrite an already-mapped voice ID with a raw `@CHAR-01` reference cell from table 2.4
+            if code.startswith(("@VOICE-", "voice_", "VOICE-")) and re.fullmatch(
+                r"(?:@CHAR-\d+|char_\d+|CHAR-\d+)", name
+            ):
+                if name in mapping:
+                    mapping[code] = mapping[name]
+                continue
             mapping[code] = name
-            # Map matching voice_char_XX or @VOICE-XX mentioned in the same table row
             mv = voice_in_row_re.search(line)
             if mv:
                 mapping[mv.group(1)] = name
@@ -61,34 +84,64 @@ def load_asset_name_map(root: Path, explicit_bible: Path | None = None) -> dict[
                 mapping[f"voice_{code}"] = name
             elif code.startswith("@CHAR-"):
                 mapping[code.replace("@CHAR-", "@VOICE-")] = name
+            elif code.startswith("CHAR-"):
+                mapping[code.replace("CHAR-", "VOICE-")] = name
         if len(mapping) > 1:
             break
     return mapping
 
 
-def replace_asset_codes(text: str, asset_map: dict[str, str]) -> str:
-    """Replace known character/scene codes with readable names and drop unknown raw IDs cleanly."""
-    # First remove explicit mouth-lock annotations (technical AI prompting tags)
+def replace_asset_codes(text: str, asset_map: dict[str, str], preserve_cjk_spaces: bool = False) -> str:
+    """Replace known character/scene/prop/voice codes with readable names and strip technical tags."""
+    # Remove explicit mouth-lock annotations (technical AI prompting tags)
     text = re.sub(
-        r"[（(]?\s*(?:在场角色[（(]?[^）)]*[）)]?|(?:(?:char_\d+|@CHAR-\d+|CHAR-\d+)[、,，与和\s]*)+)?(?:全程?闭嘴静态|闭嘴静态|张嘴清晰发声)(?:[（(][^）)]*[）)])?\s*[）)]?[；;，,。]?",
+        r"[（(]?\s*(?:在场角色[（(]?[^）)]*[）)]?|(?:(?:`?(?:char_\d+|@CHAR-\d+|CHAR-\d+)`?)[、,，与和\s]*)+)?"
+        r"(?:全程?闭嘴静态|闭嘴静态|张嘴清晰发声|口型锁定)(?:[（(][^）)]*[）)])?\s*[）)]?[；;，,。]?",
         "",
         text,
     )
-    # Replace known IDs with readable names (longest keys first)
+    # Replace ALL known IDs (including @CHAR / @LOC / @PROP / @VOICE / char_ / prop_ / voice_char_) longest first
     for code in sorted(asset_map.keys(), key=len, reverse=True):
-        if code.startswith(("prop_", "@PROP-", "PROP-")):
-            continue
-        text = re.sub(rf"`?{re.escape(code)}`?", asset_map[code], text)
-    # Strip any remaining technical asset codes (like prop_01 / FACE-03 / unknown IDs)
+        name = asset_map[code]
+        text = re.sub(
+            rf"`?{re.escape(code)}`?(?:\s*[（(]\s*{re.escape(name)}\s*[）)]|\s*{re.escape(name)})?",
+            name,
+            text,
+        )
+    # Strip any remaining unmapped technical asset codes (e.g. FACE-03 / unknown IDs)
     text = ASSET_CODE_CLEAN_RE.sub("", text)
     # Remove leading camera-shot descriptors so △action reads like a clean screenplay
     text = CAMERA_PREFIX_RE.sub("", text)
-    # Tidy orphaned brackets and punctuation left behind by stripped IDs
+    # Tidy orphaned brackets, duplicate punctuation, and stray spaces between CJK characters
     text = re.sub(r"[（(]\s*[、,，与和]*\s*[）)]", "", text)
     text = re.sub(r"([，,；;。])[、，,；;]+", r"\1", text)
     text = re.sub(r"(?:在场角色)?[、，,与和]+\s*(?:均保持|保持)", "众人保持", text)
     text = re.sub(r"[，,；;]\s*[与和、]+\s*$", "", text)
+    if not preserve_cjk_spaces:
+        text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
     return text.strip(" ；;，,")
+
+
+def clean_sound_line(raw_snd: str, asset_map: dict[str, str]) -> str:
+    """Strip [环境音]/[音效]/[Foley]/[BGM] descriptive segments cleanly up to speaker/dialogue boundary."""
+    plain = strip_md_inline(raw_snd).strip()
+    clauses = [c.strip() for c in re.split(r"[；;]", plain) if c.strip()]
+    kept: list[str] = []
+    for clause in clauses:
+        if FOLEY_CLAUSE_START_RE.match(clause):
+            # If the same clause contains a comma-separated speaker + dialogue, keep from speaker onward
+            m_inline = INLINE_FOLEY_TO_SPEAKER_RE.match(clause)
+            if m_inline:
+                remainder = clause[m_inline.end() :].strip()
+                if remainder:
+                    kept.append(remainder)
+            # Otherwise drop the entire Foley/ambient sound clause
+            continue
+        kept.append(clause)
+    if not kept:
+        return ""
+    joined = "；".join(kept)
+    return replace_asset_codes(joined, asset_map)
 
 
 def int_to_cn(n: int) -> str:
@@ -109,10 +162,32 @@ def natural_sort_key(path: Path) -> list[int | str]:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
+def resolve_scripts_dir(root: Path, explicit_scripts_dir: Path | None) -> Path:
+    """Support passing either project root (containing 剧本/) or the scripts directory itself."""
+    if explicit_scripts_dir:
+        return explicit_scripts_dir.expanduser().resolve()
+    sub = root / "剧本"
+    if sub.is_dir():
+        return sub
+    if root.is_dir():
+        direct_eps = [
+            p
+            for p in root.glob("*.md")
+            if p.stem.lower() not in EXCLUDED_SCRIPT_STEMS and not p.stem.startswith(("00_", "01_"))
+        ]
+        if direct_eps:
+            return root
+    return sub
+
+
 def discover_episodes(scripts_dir: Path) -> list[Path]:
     if not scripts_dir.is_dir():
         raise ValueError(f"剧本目录不存在: {scripts_dir}")
-    eps = [p for p in sorted(scripts_dir.glob("*.md"), key=natural_sort_key) if not p.stem.startswith("00_")]
+    eps = [
+        p
+        for p in sorted(scripts_dir.glob("*.md"), key=natural_sort_key)
+        if p.stem.lower() not in EXCLUDED_SCRIPT_STEMS and not p.stem.startswith(("00_", "01_"))
+    ]
     if not eps:
         raise ValueError(f"剧本目录下未找到分集 Markdown 文件: {scripts_dir}")
     return eps
@@ -125,7 +200,7 @@ def strip_md_inline(text: str) -> str:
 
 
 def parse_production_blocks(path: Path) -> tuple[str, list[tuple[str, str]]]:
-    raw = path.read_text(encoding="utf-8-sig")
+    raw = path.read_text(encoding="utf-8-sig", errors="replace")
     title = ""
     blocks: list[tuple[str, str]] = []
     for line in raw.splitlines():
@@ -151,7 +226,7 @@ def parse_clean_script_blocks(
 ) -> tuple[str, list[tuple[str, str]]]:
     """Convert production script to clean Hongguo submission format (第一集 / △动作 / 角色：台词 / （本集完）)."""
     amap = asset_map or {"voice_narrator": "旁白"}
-    raw = path.read_text(encoding="utf-8-sig")
+    raw = path.read_text(encoding="utf-8-sig", errors="replace")
     sec_title = f"第{int_to_cn(ep_index)}集"
     blocks: list[tuple[str, str]] = []
     scene_no = 0
@@ -161,21 +236,29 @@ def parse_clean_script_blocks(
         s = line.strip()
         if not s or re.match(r"^-{3,}$", s) or s.startswith("# "):
             continue
+        if s.startswith("（注：") or s.startswith("(注:"):
+            continue
         # Skip technical metadata lines
         if re.match(r"^-\s*\[(?:集数|总镜头数|总帧数|总秒数|出场角色ID|使用场景ID|画面主体参考ID|场景参考ID)\]", s):
             continue
-        if re.match(r"^(?:-\s*)?(?:\*\*)?(?:估测时长|所属弧段|出场 PNG|SVG 沙雕|使用固定场景|核心道具|HTML HUD|本集校验|本集爽点)", s):
+        if re.match(
+            r"^(?:-\s*)?(?:\*\*)?(?:估测时长|总时长|所属弧段|出场\s*PNG|SVG\s*沙雕|使用固定场景|核心道具|HTML\s*HUD|本集校验|本集爽点|本集推进)",
+            s,
+        ):
             continue
-        if re.match(r"^(?:#{2,4}\s*)?(?:\*\*)?[\[【]?(?:镜\s*\d+|Shot\s*\d+|集末卡点)", s, re.I):
+        if re.match(r"^(?:#{2,4}\s*)?(?:\*\*)?[\[【]?(?:分?镜头?\s*\d+|Shot\s*\d+|集末卡点)", s, re.I):
             cur_voice_label = ""
             continue
         if re.match(r"^##\s+[一二三四五六七八九十]、", s):
+            continue
+        if re.match(r"^(?:-\s*)?[\[【]切黑屏[^\]】]*[\]】]$", s):
             continue
 
         # Scene heading
         if re.match(r"^##\s*(?:场|场景)\s*\d+", s):
             scene_no += 1
-            clean_scene = replace_asset_codes(re.sub(r"^##\s*(?:场|场景)\s*\d+[｜|:\s]*", "", s), amap)
+            raw_scene = strip_md_inline(re.sub(r"^##\s*(?:场|场景)\s*\d+[｜|:\s]*", "", s))
+            clean_scene = replace_asset_codes(raw_scene, amap, preserve_cjk_spaces=True)
             blocks.append(("heading", f"{ep_index}-{scene_no} {clean_scene}"))
             continue
 
@@ -186,11 +269,33 @@ def parse_clean_script_blocks(
             if "narrator" in raw_v.lower():
                 cur_voice_label = "旁白"
             else:
-                cur_voice_label = amap.get(raw_v, raw_v)
+                cur_voice_label = replace_asset_codes(raw_v, amap) or amap.get(raw_v, raw_v)
             continue
 
-        # Visual/action line -> △动作
-        m_vis = re.match(r"^(?:-\s*)?(?:\*\*)?(?:\[画面[^\]]*\]|画面(?:与[^：:]+)?)[：:]\s*(.+)$", s)
+        # Screen subtitle / UI overlay stage directions (`[画面字幕]` / `[系统弹窗]` / `[UI特效]`)
+        m_sub = re.match(
+            r"^(?:-\s*)?(?:\*{0,2})?[\[【]((?:画面字幕|UI特效|系统弹窗|血红色系统弹窗|字幕|花字)[^\]】]*)[\]】](?:[：:]\s*(.*))?$",
+            s,
+            re.I,
+        )
+        if m_sub:
+            inner_tag = strip_md_inline(m_sub.group(1)).strip()
+            trailing = strip_md_inline(m_sub.group(2) or "").strip()
+            if trailing:
+                sub_text = replace_asset_codes(trailing, amap)
+            elif "：" in inner_tag or ":" in inner_tag:
+                sub_text = replace_asset_codes(re.split(r"[：:]", inner_tag, maxsplit=1)[1].strip(), amap)
+            else:
+                sub_text = replace_asset_codes(inner_tag, amap)
+            if sub_text:
+                blocks.append(("paragraph", f"△【字幕】{sub_text}"))
+            continue
+
+        # Visual / Action / Camera stage directions -> △动作
+        m_vis = re.match(
+            r"^(?:-\s*)?(?:\*{0,2})?(?:\[画面[^\]]*\]|画面(?:与[^：:]+)?|动作|镜头|视觉|特写)[：:]\s*(.+)$",
+            s,
+        )
         if m_vis:
             action = replace_asset_codes(strip_md_inline(m_vis.group(1)), amap)
             if action:
@@ -201,22 +306,25 @@ def parse_clean_script_blocks(
         m_ex = re.match(r"^-\s*\[精确对白文本\][：:]\s*(.+)$", s)
         if m_ex:
             spk = cur_voice_label or "角色"
-            blocks.append(("paragraph", f"{spk}：{m_ex.group(1).strip()}"))
+            dlg = replace_asset_codes(strip_md_inline(m_ex.group(1)).strip(), amap)
+            if dlg:
+                blocks.append(("paragraph", f"{spk}：{dlg}"))
             continue
 
-        # Speaker + dialogue line (`pingou_tuan_drama` style)
+        # Speaker + dialogue line (`pingou_tuan_drama` style) -> MUST resolve asset codes
         m_sp = re.match(r"^(?:-\s*)?\*{0,2}说话人声纹\s*\+\s*完整台词\*{0,2}[：:]\s*(.+)$", s)
         if m_sp:
-            line_clean = strip_md_inline(m_sp.group(1)).strip()
-            if not line_clean.startswith("（无台词"):
-                blocks.append(("paragraph", line_clean))
+            raw_sp = strip_md_inline(m_sp.group(1)).strip()
+            if not raw_sp.startswith("（无台词"):
+                line_clean = replace_asset_codes(raw_sp, amap)
+                if line_clean:
+                    blocks.append(("paragraph", line_clean))
             continue
 
-        # Standard `声音：` line
+        # Standard `声音：` line -> strip Foley/ambient clauses cleanly
         m_snd = re.match(r"^(?:-\s*)?\*{0,2}声音\*{0,2}[：:]\s*(.+)$", s)
         if m_snd:
-            snd = re.sub(r"\[(?:环境音|音效|BGM)[^\]]*\][；;，,\s]*", "", strip_md_inline(m_snd.group(1)))
-            snd = replace_asset_codes(snd, amap)
+            snd = clean_sound_line(m_snd.group(1), amap)
             if snd:
                 blocks.append(("paragraph", snd))
             continue
@@ -230,7 +338,7 @@ def validate_no_placeholders(files: list[Path], allow_placeholders: bool) -> Non
         return
     leaks: list[str] = []
     for p in files:
-        text = p.read_text(encoding="utf-8-sig")
+        text = p.read_text(encoding="utf-8-sig", errors="replace")
         for m in PLACEHOLDER_RE.finditer(text):
             leaks.append(f"{p.name}: {m.group(0)}")
     if leaks:
@@ -244,7 +352,10 @@ def check_hongguo_title(title: str) -> list[str]:
     if len(title) > 20:
         warnings.append(f"剧名长度 {len(title)} 字 > 红果后台 20 字符上限。")
     if FORBIDDEN_TITLE_CHARS_RE.search(title):
-        warnings.append("剧名含红果后台禁用字符（《》<> 或空格），上传剧壳时请去除。")
+        warnings.append("剧名含红果后台禁用字符（《》<>【】[] 或空格），上传剧壳时请去除。")
+    hype = FORBIDDEN_TITLE_HYPE_RE.findall(title)
+    if hype:
+        warnings.append(f"剧名含红果禁用夸张营销词（{'、'.join(dict.fromkeys(hype))}），请替换为中性具象剧名。")
     return warnings
 
 
@@ -403,7 +514,7 @@ def main() -> int:
     parser.add_argument("--scripts-dir", type=Path, default=None, help="可选自定义剧本子目录（默认 <root>/剧本）")
     parser.add_argument("--out-docx", type=Path, default=None, help="输出 .docx 路径")
     parser.add_argument("--out-txt", type=Path, default=None, help="输出 .txt 路径")
-    parser.add_argument("--title", default="", help="剧名（红果上传须 ≤20 字符且无《》与空格）")
+    parser.add_argument("--title", default="", help="剧名（红果上传须 ≤20 字符且无《》<>【】空格与夸张营销词）")
     parser.add_argument("--author", default="", help="可选编剧名")
     parser.add_argument(
         "--format",
@@ -411,7 +522,7 @@ def main() -> int:
         default="production",
         help="导出形态：production（完整产线版）或 clean-script（红果送审/编剧投稿纯净剧本版）",
     )
-    parser.add_argument("--bible", type=Path, default=None, help="可选资产圣经路径（clean-script 时用于将 char_01/voice_char_01 还原为角色名）")
+    parser.add_argument("--bible", type=Path, default=None, help="可选资产圣经路径（clean-script 时用于还原角色/场景/道具/声线名）")
     parser.add_argument("--include-bible", action="store_true", help="将 00_季播总案与资产表.md 附在剧本前导出（仅 production）")
     parser.add_argument("--allow-placeholders", action="store_true", help="允许未填占位符继续导出")
     args = parser.parse_args()
@@ -421,10 +532,12 @@ def main() -> int:
 
     try:
         root = args.root.expanduser().resolve()
-        s_dir = args.scripts_dir.expanduser().resolve() if args.scripts_dir else (root / "剧本")
+        s_dir = resolve_scripts_dir(root, args.scripts_dir)
         episodes = discover_episodes(s_dir)
         files_to_validate = list(episodes)
         bible_path = args.bible.expanduser().resolve() if args.bible else (root / "00_季播总案与资产表.md")
+        if not bible_path.is_file() and (root.parent / "00_季播总案与资产表.md").is_file():
+            bible_path = root.parent / "00_季播总案与资产表.md"
         if args.format == "production" and args.include_bible and bible_path.is_file():
             files_to_validate.insert(0, bible_path)
         validate_no_placeholders(files_to_validate, args.allow_placeholders)

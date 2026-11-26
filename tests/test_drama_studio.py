@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ class AIDramaScriptStudioTests(unittest.TestCase):
             r_init = subprocess.run(
                 [
                     sys.executable,
+                    "-B",
                     str(SCRIPTS_DIR / "init_drama_project.py"),
                     "--root",
                     str(root),
@@ -28,7 +30,7 @@ class AIDramaScriptStudioTests(unittest.TestCase):
                     "--entry",
                     "original",
                     "--backend",
-                    "minimax-h3",
+                    "auto",
                 ],
                 capture_output=True,
                 text=True,
@@ -38,39 +40,53 @@ class AIDramaScriptStudioTests(unittest.TestCase):
             self.assertTrue((root / "00_季播总案与资产表.md").exists())
             self.assertTrue((root / "01_分集卡点纲.md").exists())
 
+            # Populate asset bible with @CHAR / @LOC / @PROP entries for clean-script resolution
+            bible = root / "00_季播总案与资产表.md"
+            bible.write_text(
+                "# 季播总案与资产表\n\n"
+                "| 资产槽位 | 名称 | 说明 |\n|---|---|---|\n"
+                "| `@CHAR-01` | 陈默 | 高三学生 |\n"
+                "| `@CHAR-02` | 王老师 | 班主任 |\n"
+                "| `@LOC-01` | 高三晚自习教室 | 主场景 |\n"
+                "| `@PROP-01` | 红色模拟卷 | 关键道具 |\n",
+                encoding="utf-8",
+            )
+
             ep1 = root / "剧本" / "第001集_不准抬头.md"
             ep1.write_text(
                 "# 第001集 不准抬头\n\n"
-                "## 镜号 1（3s）\n"
-                "- **场景**：`@LOC-01` 高三晚自习教室\n"
-                "- **画面**：黑板上突然渗出红字《晚自习守则：十点后听到点名绝不能答应》。陈默（`@CHAR-01` `[shock]`）猛地咬住笔杆。\n"
-                "- **台词**：\n"
-                "  - 王老师（`@CHAR-02`）：「陈默，这道送分题你选哪个？」\n"
-                "  - 陈默（`@CHAR-01`）：「老师，我现在要是敢开口，咱俩都得交卷！」\n\n"
-                "## 镜号 2（4s）【集末钩子】\n"
-                "- **场景**：`@LOC-01` 高三晚自习教室\n"
-                "- **画面**：讲台下的影子突然裂开两张嘴，倒计时弹窗【00:03】在陈默瞳孔里炸开。\n"
-                "- **台词**：\n"
-                "  - 陈默（`@CHAR-01`）：「等等，五年高考三年模拟里没写这题超纲啊！」\n",
+                "## 场 1 | `@LOC-01` 高三晚自习教室 日/内\n\n"
+                "### 镜头 1（3s）\n"
+                "- 画面：黑板上渗出红字，陈默（`@CHAR-01` `[shock]`）捏紧 `@PROP-01`。\n"
+                "- **声音**：[音效] 粉笔折断声清脆响起；王老师（`@CHAR-02`）：「陈默，这道送分题你选哪个？」\n\n"
+                "### 镜头 2（4s）【集末钩子】\n"
+                "- 画面：讲台下的影子裂开两张嘴，陈默（`@CHAR-01`）瞪大眼睛。\n"
+                "- **声音**：[音效] 拍桌，陈默（`@CHAR-01`）：「老师，这题超纲了，五年高考三年模拟里没写这题啊！」\n",
                 encoding="utf-8",
             )
 
             r_lint = subprocess.run(
                 [
                     sys.executable,
+                    "-B",
                     str(SCRIPTS_DIR / "lint_script.py"),
                     "--dir",
                     str(root / "剧本"),
                     "--genre",
                     "shadiao",
                     "--backend",
-                    "minimax-h3",
+                    "auto",
+                    "--json",
                 ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
             )
             self.assertEqual(r_lint.returncode, 0, r_lint.stdout + "\n" + r_lint.stderr)
+            lint_data = json.loads(r_lint.stdout)
+            ep_metrics = lint_data["results"][0]["metrics"]
+            self.assertEqual(ep_metrics["backend"], "general")
+            self.assertGreater(ep_metrics["spoken_cjk"], 20)
 
             for fmt in ("production", "clean-script"):
                 out_docx = root / "交付" / f"夜自习守则_{fmt}.docx"
@@ -78,6 +94,7 @@ class AIDramaScriptStudioTests(unittest.TestCase):
                 r_exp = subprocess.run(
                     [
                         sys.executable,
+                        "-B",
                         str(SCRIPTS_DIR / "export_drama.py"),
                         "--root",
                         str(root),
@@ -97,6 +114,12 @@ class AIDramaScriptStudioTests(unittest.TestCase):
                 self.assertEqual(r_exp.returncode, 0, r_exp.stdout + "\n" + r_exp.stderr)
                 self.assertTrue(out_docx.exists())
                 self.assertTrue(out_txt.exists())
+                if fmt == "clean-script":
+                    clean_txt = out_txt.read_text(encoding="utf-8")
+                    self.assertNotIn("@PROP-01", clean_txt)
+                    self.assertIn("红色模拟卷", clean_txt)
+                    self.assertNotIn("[音效]", clean_txt)
+                    self.assertIn("老师，这题超纲了", clean_txt)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Audio-visual pacing, Hongguo 40x narration-ratio gate, and MiniMax-H3 cost mirror.
 
-Supports both standard `[镜01｜0-7s]` format and production pipeline formats:
+Pure diagnostic mirror: emits [ADVISORY] items and returns exit code 0
+(only CLI/missing-file errors return 2).
+
+Supports standard `[镜01｜0-7.5s]` / `[镜头01]` / `分镜01` formats and pipeline formats:
 - `### Shot 01 | 124帧 (5.17s)` with `- [精确对白文本]:` / `- [发声角色声纹ID ...]:`
 - `### 【镜 01｜00:00–00:03（3秒）】` with `说话人声纹 + 完整台词`
 """
@@ -21,24 +24,82 @@ CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 SCENE_HEADER_RE = re.compile(r"^(?:#{2,4}\s*)?(?:场\s*\d+|场景\s*\d+|【?场次\s*\d+|Scene\s*\d+)", re.I)
 SCENE_ID_RE = re.compile(r"(?:@LOC-\d+|scene_\d+|SCENE-\d+)")
 CHAR_ID_RE = re.compile(r"(?:@CHAR-\d+|char_\d+|CHAR-\d+)")
-ANY_ASSET_RE = re.compile(r"(?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop|voice_char)_\d+|(?:CHAR|SCENE|PROP|SVG-DOLL)-\d+)")
+ANY_ASSET_RE = re.compile(
+    r"(?:@(?:CHAR|LOC|PROP|VOICE)-\d+|(?:char|scene|prop|voice_char)_\d+|voice_narrator|(?:CHAR|SCENE|PROP|VOICE|SVG-DOLL)-\d+)"
+)
 
-# Matches 3 real shot header styles:
-# 1. [镜01｜0-7s｜...]  2. ### Shot 01 | 124帧 (5.17s)  3. ### 【镜 01｜00:00–00:03（3秒）｜...】
-SHOT_RANGE_SEC_RE = re.compile(r"(?:镜\s*\d+|集末卡点|卡点|Shot\s*\d+)[^\n]*?(?<!:)(\d+)\s*[-–—~]\s*(\d+)\s*(?:s|秒)", re.I)
-SHOT_MMSS_RE = re.compile(r"(?:镜\s*\d+|Shot\s*\d+)[^\n]*?(\d{2}):(\d{2})\s*[-–—~]\s*(\d{2}):(\d{2})", re.I)
-SHOT_PAREN_SEC_RE = re.compile(r"(?:Shot\s*\d+|镜\s*\d+)[^\n]*?[（(]\s*(\d+(?:\.\d+)?)\s*(?:s|秒)\s*[）)]", re.I)
-SHOT_GENERIC_RE = re.compile(r"^(?:#{2,4}\s*)?\*{0,2}\s*[\[【]?\s*(?:Shot\s*\d+|镜\s*\d+|集末卡点)", re.I)
-TOTAL_SEC_META_RE = re.compile(r"(?:\[总秒数\]|总时长)[：:]\s*\*?\*?(\d+(?:\.\d+)?)\s*(?:秒|s)?", re.I)
+# Matches shot header styles including decimals (0-7.5s) and 镜头01 / 分镜01
+SHOT_RANGE_SEC_RE = re.compile(
+    r"(?:分?镜头?\s*\d+|集末卡点|卡点|Shot\s*\d+)[^\n]*?(?<!:)(\d+(?:\.\d+)?)\s*[-–—~]\s*(\d+(?:\.\d+)?)\s*(?:s|秒)",
+    re.I,
+)
+SHOT_MMSS_RE = re.compile(
+    r"(?:分?镜头?\s*\d+|集末卡点|Shot\s*\d+)[^\n]*?(\d{2}):(\d{2})\s*[-–—~]\s*(\d{2}):(\d{2})",
+    re.I,
+)
+SHOT_PAREN_SEC_RE = re.compile(
+    r"(?:Shot\s*\d+|分?镜头?\s*\d+|集末卡点)[^\n]*?[（(]\s*(\d+(?:\.\d+)?)\s*(?:s|秒)\s*[）)]",
+    re.I,
+)
+SHOT_GENERIC_RE = re.compile(
+    r"^(?:#{2,4}\s*)?\*{0,2}\s*[\[【]?\s*(?:Shot\s*\d+|分?镜头?\s*\d+|集末卡点)",
+    re.I,
+)
+TOTAL_SEC_META_RE = re.compile(
+    r"(?:\[总秒数\]|总时长|估测时长|预计时长)[：:]\s*\*{0,2}(\d+(?:\.\d+)?)\s*(?:秒|s)?",
+    re.I,
+)
+
+META_BULLET_RE = re.compile(
+    r"^(?:[-*]\s*)?\*{0,2}(?:本集校验|本集爽点|本集推进|估测时长|总时长|预计时长|场景数|出场资产|集末钩子|所属弧段|"
+    r"出场\s*PNG|SVG\s*沙雕|使用固定场景|核心道具|HTML\s*HUD|剧名|分集名|\[(?:集数|总镜头数|总帧数|总秒数|出场角色ID|使用场景ID|画面主体参考ID|场景参考ID)\])",
+    re.I,
+)
+UI_SUBTITLE_BRACKET_RE = re.compile(
+    r"[\[【][^\]】\n]*(?:画面字幕|UI特效|系统弹窗|弹窗|HUD|花字|贴纸|切黑屏|下集预告)[^\]】\n]*[\]】]",
+    re.I,
+)
 
 SPOKEN_QUOTE_RE = re.compile(r"“([^”\n]+)”|「([^」\n]+)」|\"([^\"\n]+)\"")
+SOUND_FIELD_PREFIX_RE = re.compile(
+    r"^(?:[-*]\s*)?\*{0,2}(?:声音|音频|对白|台词|说话人声纹\s*\+\s*完整台词)\*{0,2}[：:]\s*"
+)
 EXACT_DIALOGUE_LINE_RE = re.compile(r"^(?:[-*]\s*)?\[精确对白文本\][：:]\s*(.+)$")
 VOICE_LINE_RE = re.compile(r"^(?:[-*]\s*)?\[发声角色声纹ID[^\]]*\][：:]\s*(.+)$")
-SPEAKER_DIALOGUE_LINE_RE = re.compile(r"^(?:[-*]\s*)?\*{0,2}说话人声纹\s*\+\s*完整台词\*{0,2}[：:]\s*(.+)$")
-VISUAL_LINE_RE = re.compile(r"^(?:[-*]\s*)?(?:\*{0,2})?(?:\[画面[^\]]*\]|画面(?:与[^：:]+)?|镜头|动作|视觉|特写)[：:]")
+VISUAL_LINE_RE = re.compile(
+    r"^(?:[-*]\s*)?(?:\*{0,2})?(?:\[画面[^\]]*\]|画面(?:与[^：:]+)?|镜头|动作|视觉|特写)[：:]"
+)
 CLIFFHANGER_HINT_RE = re.compile(r"集末卡点|卡点|钩子|切黑屏|下集预告|未完待续|黑屏|悬念|强断章|断章")
-NARRATOR_MARKER_RE = re.compile(r"voice_narrator|旁白|画外音|内心独白|心声|\bOS\b", re.I)
-MOUTH_LOCK_RE = re.compile(r"闭嘴|张嘴|开口发声|发声")
+
+# True narrator / OS markers (distinct from off-screen character dialogue like 画外陌生男声 / @CHAR-01（画外）)
+NARRATOR_MARKER_RE = re.compile(
+    r"voice_narrator|画外旁白|旁白|内心独白|独白|心声|(?<![A-Za-z])OS(?![A-Za-z])",
+    re.I,
+)
+OFFSCREEN_CHAR_RE = re.compile(
+    r"画外(?:陌生)?(?:男声|女声|人声|来声|声|声音|音)|[（(]\s*画外[^）)]*[）)]|(?<![A-Za-z])VO(?![A-Za-z])",
+    re.I,
+)
+SPEAKER_BEFORE_QUOTE_RE = re.compile(
+    r"(?:"
+    r"`?(?:@CHAR-\d+|@VOICE-\d+|char_\d+|voice_char_\d+|CHAR-\d+|voice_narrator)`?"
+    r"|画外旁白|旁白|内心独白|独白|心声|(?<![A-Za-z])OS(?![A-Za-z])"
+    r"|画外[^\s：:；;，,（(]{1,10}"
+    r"|[\u4e00-\u9fff]{1,6}"
+    r")(?:\s*[（(][^）)\n]{1,20}[）)])?\s*[：:]\s*$",
+    re.I,
+)
+EXPLICIT_SPEAKER_ID_RE = re.compile(
+    r"(?:@CHAR-\d+|@VOICE-\d+|char_\d+|voice_char_\d+|CHAR-\d+|voice_narrator|画外旁白|旁白|画外[^\s：:；;，,（(]{1,10})",
+    re.I,
+)
+FOLEY_TAG_RE = re.compile(r"(?:[\[【]\s*)?(?:音效|环境音|Foley|魔性音效)(?:\s*[\]】])?", re.I)
+
+# Strict mouth-lock phrasing: prevents false-passing on "张嘴打哈欠" or "张嘴转头"
+MOUTH_LOCK_RE = re.compile(
+    r"口型锁定|闭嘴(?:静态|不动|不语|倾听|盯|僵立)?|抿嘴(?:静态|不语|不出声)?|不出声|未开口|不开口|"
+    r"张嘴(?:清晰)?发声|清晰发声|开口发声|只由[^\n，。；]{1,15}开口|仅[^\n，。；]{1,15}(?:开口|发声)"
+)
 
 UNFILMABLE_MENTAL_RE = re.compile(
     r"内心(?:充满|翻涌|冷笑|暗喜|震惊|挣扎|崩溃|无比)|"
@@ -47,8 +108,16 @@ UNFILMABLE_MENTAL_RE = re.compile(
     r"心中涌起|看穿了一切|早已料到|复杂的思绪|意识到自己"
 )
 
+SCRIPT_CLICHE_RE = re.compile(
+    r"这不仅仅是一[场次个件][^，。！？\n]{1,14}更是|"
+    r"不仅仅是一[场次个件][^，。！？\n]{1,14}更是|"
+    r"空气仿佛(?:瞬间)?凝固|"
+    r"命运的齿轮(?:开始转动)?|"
+    r"眼底闪过一丝(?:不易察觉的)?"
+)
+
 NOTICE_TEXT = (
-    "本报告为 AI 短剧视听节奏、红果 40× 旁白红线与算力成本体检镜子，不是必须清零的硬考题；"
+    "本报告为 AI 短剧视听节奏、红果 40× 旁白红线与算力成本体检镜子，仅输出 [ADVISORY]，不是必须清零的硬考题；"
     "合理的艺术留白、快嘴连珠炮包袱或特殊场面请结合剧种手感保留。"
 )
 
@@ -59,6 +128,16 @@ class Advisory:
     line: int
     excerpt: str
     suggestion: str
+
+
+def resolve_backend(genre: str, backend: str) -> str:
+    if backend != "auto":
+        return backend
+    return {
+        "ai-drama": "minimax-h3",
+        "comic-drama": "jimeng",
+        "shadiao": "general",
+    }[genre]
 
 
 def natural_sort_key(path: Path) -> list[int | str]:
@@ -77,34 +156,57 @@ def parse_shot_timing(line: str) -> tuple[bool, float | None, float | None]:
         return True, float(max(0, t2 - t1)), float(t2)
     m_range = SHOT_RANGE_SEC_RE.search(line)
     if m_range:
-        t1, t2 = int(m_range.group(1)), int(m_range.group(2))
-        return True, float(max(0, t2 - t1)), float(t2)
+        t1, t2 = float(m_range.group(1)), float(m_range.group(2))
+        return True, round(max(0.0, t2 - t1), 2), t2
     m_paren = SHOT_PAREN_SEC_RE.search(line)
     if m_paren:
         return True, float(m_paren.group(1)), None
     return True, None, None
 
 
+def is_foley_onomatopoeia_quote(local_prefix: str, q_cjk: int) -> bool:
+    """Return True ONLY when a short (<=4 CJK) quote is immediately under [音效]/[Foley] with NO speaker tag."""
+    if q_cjk > 4:
+        return False
+    foley_matches = list(FOLEY_TAG_RE.finditer(local_prefix))
+    if not foley_matches:
+        return False
+    after_foley = local_prefix[foley_matches[-1].end() :]
+    if EXPLICIT_SPEAKER_ID_RE.search(after_foley):
+        return False
+    # If separated by clause/comma punctuation and ending with a Chinese speaker tag (e.g. "拍桌，陈欢："), it's dialogue
+    if re.search(r"[；;，,。！？]", after_foley):
+        tail_clause = re.split(r"[；;，,。！？]", after_foley)[-1].strip()
+        if tail_clause and SPEAKER_BEFORE_QUOTE_RE.search(tail_clause):
+            return False
+    return True
+
+
 def analyze_episode(
     path: Path,
     genre: str = "ai-drama",
-    backend: str = "minimax-h3",
+    backend: str = "auto",
     allow_high_narration: bool = False,
+    compilation: bool = False,
 ) -> tuple[list[Advisory], dict[str, Any]]:
+    resolved_backend = resolve_backend(genre, backend)
     text = path.read_text(encoding="utf-8-sig", errors="replace")
     lines = text.splitlines()
     advisories: list[Advisory] = []
 
     speech_limit = 46 if genre == "shadiao" else 38
     cps = 5.6 if genre == "shadiao" else 4.7
-    min_dur, max_dur = {
-        "ai-drama": (48.0, 115.0),
-        "comic-drama": (50.0, 125.0),
-        "shadiao": (45.0, 130.0),
-    }[genre]
+    if compilation:
+        min_dur, max_dur = (120.0, 900.0)
+    else:
+        min_dur, max_dur = {
+            "ai-drama": (48.0, 115.0),
+            "comic-drama": (50.0, 125.0),
+            "shadiao": (45.0, 130.0),
+        }[genre]
 
     explicit_total_sec: float | None = None
-    m_total = TOTAL_SEC_META_RE.search(text[:800])
+    m_total = TOTAL_SEC_META_RE.search(text[:1000])
     if m_total:
         explicit_total_sec = float(m_total.group(1))
 
@@ -119,6 +221,7 @@ def analyze_episode(
     narrator_cjk_total = 0
     long_speech_lines = 0
     unfilmable_hits = 0
+    cliche_hits = 0
     all_assets: set[str] = set()
 
     # Per-shot state for MiniMax-H3 checks and voice attribution
@@ -127,14 +230,18 @@ def analyze_episode(
     cur_shot_chars: set[str] = set()
     cur_shot_visual_text = ""
     cur_shot_is_narrator = False
+    cur_shot_has_onscreen_dialogue = False
     mouth_lock_missing = 0
 
     def flush_shot() -> None:
         nonlocal mouth_lock_missing
         if cur_shot_line <= 0:
             return
-        if backend == "minimax-h3":
-            visual_assets = {a for a in cur_shot_assets if not (a.startswith("@VOICE-") or a.startswith("voice_"))}
+        if resolved_backend == "minimax-h3":
+            audio_assets = {
+                a for a in cur_shot_assets if a.startswith(("@VOICE-", "voice_", "VOICE-"))
+            }
+            visual_assets = cur_shot_assets - audio_assets
             if len(visual_assets) > 9 or len(cur_shot_assets) > 12:
                 advisories.append(
                     Advisory(
@@ -144,7 +251,21 @@ def analyze_episode(
                         "超过 MiniMax-H3 单次 12 参考槽位（≤9 图）建议上限；建议拆分正反打镜头，单镜保持 2–3 个核心主体。",
                     )
                 )
-            if len(cur_shot_chars) >= 2 and cur_shot_visual_text and not MOUTH_LOCK_RE.search(cur_shot_visual_text):
+            if len(audio_assets) > 3:
+                advisories.append(
+                    Advisory(
+                        "minimax_too_many_audio_assets",
+                        cur_shot_line,
+                        f"单镜引用 {len(audio_assets)} 个音频/声线槽位",
+                        "超过 MiniMax-H3 单次 ≤3 音频参考槽位上限；建议拆镜或精简同镜发声角色。",
+                    )
+                )
+            if (
+                cur_shot_has_onscreen_dialogue
+                and len(cur_shot_chars) >= 2
+                and cur_shot_visual_text
+                and not MOUTH_LOCK_RE.search(cur_shot_visual_text)
+            ):
                 mouth_lock_missing += 1
 
     for idx, raw in enumerate(lines, start=1):
@@ -165,9 +286,10 @@ def analyze_episode(
             cur_shot_chars = set()
             cur_shot_visual_text = ""
             cur_shot_is_narrator = False
+            cur_shot_has_onscreen_dialogue = False
             if s_dur is not None:
                 sum_shot_dur += s_dur
-                if backend == "minimax-h3" and s_dur > 15.0:
+                if resolved_backend == "minimax-h3" and s_dur > 15.0:
                     advisories.append(
                         Advisory(
                             "minimax_shot_over_15s",
@@ -193,6 +315,10 @@ def analyze_episode(
             cur_shot_is_narrator = bool(NARRATOR_MARKER_RE.search(m_voice.group(1)))
             continue
 
+        # Skip episode title, parenthetical notes, and metadata header bullets
+        if s.startswith("# ") or s.startswith("（注：") or s.startswith("(注:") or META_BULLET_RE.match(s):
+            continue
+
         if VISUAL_LINE_RE.match(s):
             if cur_shot_line > 0:
                 cur_shot_visual_text += " " + s
@@ -204,6 +330,16 @@ def analyze_episode(
                         idx,
                         m_u.group(0),
                         "画面指令出现抽象心理词，视频模型难以呈现；请用「肌肉导演法」改写为可见微表情/动作/道具特写，或移入声音 OS 轨。",
+                    )
+                )
+            for m_c in SCRIPT_CLICHE_RE.finditer(s):
+                cliche_hits += 1
+                advisories.append(
+                    Advisory(
+                        "script_translationese_cliche",
+                        idx,
+                        m_c.group(0),
+                        "检测到高频小说翻译腔/套话；建议改写为具体物理动作或鲜活口语。",
                     )
                 )
             continue
@@ -218,6 +354,8 @@ def analyze_episode(
                 spoken_cjk_total += q_cjk
                 if cur_shot_is_narrator:
                     narrator_cjk_total += q_cjk
+                else:
+                    cur_shot_has_onscreen_dialogue = True
                 if q_cjk > speech_limit:
                     long_speech_lines += 1
                     advisories.append(
@@ -228,30 +366,57 @@ def analyze_episode(
                             f"单句对白达 {q_cjk} 字（建议 ≤{speech_limit} 字），易挡竖屏字幕或导致口型漂移；建议拆分。",
                         )
                     )
+                for m_c in SCRIPT_CLICHE_RE.finditer(utterance):
+                    cliche_hits += 1
+                    advisories.append(
+                        Advisory(
+                            "script_translationese_cliche",
+                            idx,
+                            m_c.group(0),
+                            "台词出现小说翻译腔套话，念出来易出戏；建议改用贴合角色声口的自然短句。",
+                        )
+                    )
             continue
 
-        # Format B/C: quoted spoken dialogue (including `说话人声纹 + 完整台词`)
-        # Skip header summary lines (e.g. `**本集校验小计**`)
-        if s.startswith("**本集校验") or s.startswith("- **本集"):
-            continue
-        quotes = list(SPOKEN_QUOTE_RE.finditer(s))
+        # Format B/C: quoted spoken dialogue (strip UI/subtitle overlay brackets first)
+        cleaned_line = UI_SUBTITLE_BRACKET_RE.sub("", s)
+        quotes = list(SPOKEN_QUOTE_RE.finditer(cleaned_line))
         if quotes:
-            # Check if line context indicates narrator/OS/心声
-            first_q_start = quotes[0].start()
-            prefix = s[:first_q_start]
-            is_narr_line = cur_shot_is_narrator or bool(NARRATOR_MARKER_RE.search(prefix))
-            for m_q in quotes:
+            prev_end = 0
+            prev_quote_is_narr = cur_shot_is_narrator
+            for q_idx, m_q in enumerate(quotes):
+                raw_local_prefix = cleaned_line[prev_end : m_q.start()]
+                prev_end = m_q.end()
+                local_prefix = SOUND_FIELD_PREFIX_RE.sub("", raw_local_prefix) if q_idx == 0 else raw_local_prefix
+
                 qt = m_q.group(1) or m_q.group(2) or m_q.group(3) or ""
                 q_cjk = len(CJK_RE.findall(qt))
                 if q_cjk == 0:
                     continue
-                # Ignore tiny sound-effect quotes like “啪！” / “叮当！” on Foley lines
-                if ("音效" in prefix or "Foley" in prefix) and q_cjk <= 4:
+                if is_foley_onomatopoeia_quote(local_prefix, q_cjk):
                     continue
+
+                clauses = [c.strip() for c in re.split(r"[；;。！？\n]", local_prefix) if c.strip()]
+                speaker_clause = clauses[-1] if clauses else ""
+
+                if NARRATOR_MARKER_RE.search(speaker_clause):
+                    is_narr_quote = True
+                elif SPEAKER_BEFORE_QUOTE_RE.search(speaker_clause):
+                    is_narr_quote = False
+                elif q_idx > 0:
+                    is_narr_quote = prev_quote_is_narr
+                else:
+                    is_narr_quote = cur_shot_is_narrator
+                prev_quote_is_narr = is_narr_quote
+
+                is_offscreen_char = bool(OFFSCREEN_CHAR_RE.search(speaker_clause))
                 spoken_lines += 1
                 spoken_cjk_total += q_cjk
-                if is_narr_line:
+                if is_narr_quote:
                     narrator_cjk_total += q_cjk
+                elif not is_offscreen_char:
+                    cur_shot_has_onscreen_dialogue = True
+
                 if q_cjk > speech_limit:
                     long_speech_lines += 1
                     advisories.append(
@@ -262,16 +427,26 @@ def analyze_episode(
                             f"单句对白达 {q_cjk} 字（建议 ≤{speech_limit} 字），竖屏字幕易挡脸且易导致配音断气或口型漂移；建议拆为来回短句。",
                         )
                     )
+                for m_c in SCRIPT_CLICHE_RE.finditer(qt):
+                    cliche_hits += 1
+                    advisories.append(
+                        Advisory(
+                            "script_translationese_cliche",
+                            idx,
+                            m_c.group(0),
+                            "台词出现小说翻译腔套话，念出来易出戏；建议改用贴合角色声口的自然短句。",
+                        )
+                    )
 
     flush_shot()
 
-    if backend == "minimax-h3" and mouth_lock_missing >= 2:
+    if resolved_backend == "minimax-h3" and mouth_lock_missing >= 1:
         advisories.append(
             Advisory(
                 "minimax_missing_mouth_lock",
                 1,
-                f"本集有 {mouth_lock_missing} 个多人同框镜头未显式标注「张嘴发声 / 闭嘴静态」",
-                "MiniMax-H3 多人同框时，建议在画面描述中显式写明谁“张嘴清晰发声”、其余同框角色“闭嘴静态”，避免多人乱动嘴串音。",
+                f"本集有 {mouth_lock_missing} 个含对白的多人同框镜头未显式标注口型锁定",
+                "MiniMax-H3 多人同框有对白时，建议在画面描述中显式写明谁“张嘴清晰发声”、其余同框角色“闭嘴静态/抿嘴不语/未开口”，避免多人乱动嘴串音。",
             )
         )
 
@@ -312,7 +487,7 @@ def analyze_episode(
                     "duration_too_short",
                     1,
                     f"估测时长约 {est_sec:.1f}s（口播 {spoken_cjk_total} 字 / {shots} 镜）",
-                    f"低于 {genre} 常规单集目标下限（约 {min_dur:.0f}s）；请核对冲突与爽点/包袱是否展开充分。",
+                    f"低于 {genre} 目标下限（约 {min_dur:.0f}s）；请核对冲突与爽点/包袱是否展开充分。",
                 )
             )
         elif est_sec > max_dur:
@@ -321,17 +496,17 @@ def analyze_episode(
                     "duration_too_long",
                     1,
                     f"估测时长约 {est_sec:.1f}s（口播 {spoken_cjk_total} 字 / {shots} 镜）",
-                    f"高于 {genre} 常规单集目标上限（约 {max_dur:.0f}s）；可考虑拆进下一集并在高潮处卡点。",
+                    f"高于 {genre} 目标上限（约 {max_dur:.0f}s）；可考虑拆进下一集并在高潮处卡点（抖音沙雕合集可加 --compilation）。",
                 )
             )
 
     scene_count = max(scene_headers, len(unique_scenes))
-    if scene_count > 3:
+    if scene_count > 2:
         advisories.append(
             Advisory(
                 "too_many_scenes",
                 1,
-                f"单集涉及 {scene_count} 处场景",
+                f"单集涉及 {scene_count} 处场景（建议 1–2 处，上限 3 处）",
                 "单集场景偏多易拉高算力成本并打散节奏；如非蒙太奇快剪，建议压缩到 1–2 个复用主场景。",
             )
         )
@@ -350,7 +525,8 @@ def analyze_episode(
 
     metrics: dict[str, Any] = {
         "genre": genre,
-        "backend": backend,
+        "backend": resolved_backend,
+        "compilation": compilation,
         "scenes": scene_count,
         "shots": shots,
         "spoken_lines": spoken_lines,
@@ -361,6 +537,7 @@ def analyze_episode(
         "unique_assets": len(all_assets),
         "long_speech_lines": long_speech_lines,
         "unfilmable_mental_hits": unfilmable_hits,
+        "cliche_hits": cliche_hits,
         "mouth_lock_missing_shots": mouth_lock_missing,
         "advisories": len(advisories),
     }
@@ -371,7 +548,7 @@ def discover_scripts(directory: Path) -> list[Path]:
     excluded = {"00_季播总案与资产表", "01_分集卡点纲", "readme", "license"}
     files: list[Path] = []
     for p in sorted(directory.glob("*.md"), key=natural_sort_key):
-        if p.stem.lower() in excluded or p.stem.startswith("00_"):
+        if p.stem.lower() in excluded or p.stem.startswith(("00_", "01_")):
             continue
         files.append(p)
     return files
@@ -379,7 +556,7 @@ def discover_scripts(directory: Path) -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="AI 短剧视听节奏、红果 40× 旁白红线与 MiniMax-H3 算力成本体检镜子（非硬考题）。"
+        description="AI 短剧视听节奏、红果 40× 旁白红线与算力成本体检镜子（纯 [ADVISORY]，返回 0）。"
     )
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--file", type=Path, help="单集剧本 Markdown 文件")
@@ -392,14 +569,19 @@ def main() -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=("minimax-h3", "jimeng", "general"),
-        default="minimax-h3",
-        help="制作后端（默认 minimax-h3）",
+        choices=("auto", "minimax-h3", "jimeng", "general"),
+        default="auto",
+        help="制作后端（默认 auto：ai-drama→minimax-h3，comic-drama→jimeng，shadiao→general）",
     )
     parser.add_argument(
         "--allow-high-narration",
         action="store_true",
         help="抖音/推文旁白解说流豁免红果 20%% 旁白降档提醒",
+    )
+    parser.add_argument(
+        "--compilation",
+        action="store_true",
+        help="合集模式（适配沙雕子轨 B 2–15 分钟合集，放宽时长区间至 120–900 秒）",
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args()
@@ -430,6 +612,7 @@ def main() -> int:
             genre=args.genre,
             backend=args.backend,
             allow_high_narration=args.allow_high_narration,
+            compilation=args.compilation,
         )
         total_sec += float(m["est_duration_sec"])
         if float(m["narrator_os_ratio"]) > 0.20:
@@ -441,11 +624,11 @@ def main() -> int:
         total_min = round(total_sec / 60.0, 1)
         if (not args.allow_high_narration) and over_20_eps >= 3:
             season_advisories.append(
-                f"[SEASON_ADVISORY] (season_hongguo_tier_drop_risk): 全季有 {over_20_eps} 集旁白/OS 超过 20%，已触发红果「≥3集降档为 10× 动态解说漫剧」风险线！"
+                f"[ADVISORY] (season_hongguo_tier_drop_risk): 全季有 {over_20_eps} 集旁白/OS 超过 20%，已触发红果「≥3集降档为 10× 动态解说漫剧」风险线！"
             )
         if total_min < 20.0:
             season_advisories.append(
-                f"[SEASON_INFO]: 当前已写 {len(results)} 集累计约 {total_min} 分钟（红果首传与双周激励门槛 ≥20 分钟，终极评奖门槛 ≥30 分钟）。"
+                f"[ADVISORY] (season_duration_info): 当前已写 {len(results)} 集累计约 {total_min} 分钟（红果首传与双周激励门槛 ≥20 分钟，终极评奖门槛 ≥30 分钟）。"
             )
 
     if args.json:
@@ -481,6 +664,7 @@ def main() -> int:
                 f"spoken_cjk={m['spoken_cjk']} narrator_os={m['narrator_os_ratio']*100:.1f}% "
                 f"est_sec={m['est_duration_sec']} assets={m['unique_assets']} "
                 f"long_lines={m['long_speech_lines']} unfilmable={m['unfilmable_mental_hits']} "
+                f"cliches={m['cliche_hits']} mouth_lock_missing={m['mouth_lock_missing_shots']} "
                 f"advisories={m['advisories']}"
             )
             for a in item["advisories"]:
