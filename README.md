@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README_EN.md)
 
-专攻 **AI 短剧（MiniMax-H3 仿真人/3D 剧情向）**、**AI 漫剧（2D/3D 高奇观多季连载）**与**沙雕短剧/沙雕漫（红果 40× 快切对白轨 & 抖音/推文高旁白动画轨）**的一体化编剧与改编 Agent Skill。支持「从零独立原创完整剧本」与「基于短篇/长篇小说或大纲改编剧本」双入口；开写前强制执行**节奏与逻辑 5 问预匹配**，内置控算力固定资产表、黄金前 3 集与单集秒级卡点纲、视听分集剧本、按需分镜表、红果 40× 旁白占比红线体检及双模式 DOCX/TXT 导出。当前版本 **v1.1.0**。
+专攻 **AI 短剧（MiniMax-H3 仿真人/3D 剧情向）**、**AI 漫剧（2D/3D 高奇观多季连载）**与**沙雕短剧/沙雕漫（红果 40× 快切对白轨 & 抖音/推文高旁白动画轨）**的一体化编剧与改编 Agent Skill。支持「从零独立原创完整剧本」与「基于短篇/长篇小说或大纲改编剧本」双入口；开写前强制执行**节奏与逻辑 5 问预匹配**，内置控算力固定资产表、人物命名与剧名/分集名去 AI 味规范、黄金前 3 集与单集秒级卡点纲、视听分集剧本、按需分镜表、红果 40× 旁白占比红线体检及双模式 DOCX/TXT 导出。当前版本 **v1.2.0**。
 
 默认采用**简体中文**创作；兼容上游 [Webnovel Market Radar](https://github.com/LilHaopeng/webnovel-market-radar)、[Webnovel Short Studio](https://github.com/LilHaopeng/webnovel-short-studio) 及长篇小说三件套底稿。
 
@@ -14,7 +14,7 @@
   - **`ai-drama`（MiniMax-H3 常规写实/3D 剧情短剧）**：60–90 秒/集（约 8–14 镜），充分利用 MiniMax-H3 **5–15 秒原生音画同步与中文口型直出**，严格执行**多人同框口型隔离**（同一镜头至多 1 人开口，多人交锋自动切正反打）与单镜台词 ≤18–22 字约束。
   - **`comic-drama`（2D/3D 高奇观 AI 漫剧）**：60–120 秒/集，支持屏幕可读特效字/系统 HUD 弹窗、战力/规则可视化与多季大地图钩子。
   - **`shadiao`（沙雕短剧 / 沙雕漫双子轨）**：支持**红果 40× 快切沙雕漫**（2–4 秒/镜，固定切脸码 `normal/shock/smirk/rage/cry/sweat` + HUD 贴纸，旁白 ≤20%）与**抖音/推文熊猫头高旁白沙雕动画**（前 15 秒高能预告 + 10–15 秒包袱密度）。
-- **控算力固定资产表与单剧声口调音叉**：`00_季播总案与资产表.md` 统一锁死 `@CHAR-*`、`@LOC-*`、`@PROP-*`、`@VOICE-*` 固定槽位（控制单集 1–2 个主场景、常驻角色 3–8 人），并提取本剧专属声口切片防台词同质化。
+- **控算力固定资产表、去 AI 味命名与精短分集名**：`00_季播总案与资产表.md` 统一锁死 `@CHAR-*`、`@LOC-*`、`@PROP-*`、`@VOICE-*` 固定槽位并提取本剧专属声口切片；同时依据 [naming-and-titling.md](skills/ai-drama-script-studio/references/naming-and-titling.md) 约束 3–8 人固定班底的姓氏配额与配音防同音，剧名提供跨型谱 3 风格备选，分集名严格保持 2–6 字画面锚点或 4–8 字短钩子（不把分集梗概塞进集名）。
 - **双模式纯净导出（进组制作版 vs 平台送审纯净版）**：`export_drama.py` 支持 `--format production`（保留分镜/资产槽位供 AI 视频制作组使用）与 `--format clean-script`（自动从 `series_bible.md` 还原 `@CHAR_01` 等代号为真实角色名、剥离 `[Visual Prompt]` / `[Audio Prompt]` / `[SFX]` 等工程提示词，并执行红果剧名合规自检，一键生成平台送审定稿）。
 
 ## 配套创作工作流
@@ -95,6 +95,7 @@ python -B -m unittest discover -s tests -v
 - [改编诊断与写前节奏逻辑预匹配](skills/ai-drama-script-studio/references/adaptation-and-pacing.md)：写前 5 问门禁、黄金前 3 集 30-30-30 法则、短篇扩容与长篇切片策略。
 - [三大剧种剧本规范与范例](skills/ai-drama-script-studio/references/genre-templates.md)：`ai-drama`（MiniMax-H3）、`comic-drama`（高奇观漫剧）、`shadiao`（快切对白轨 & 高旁白动画轨）双格式剧本模板。
 - [控算力资产表、视听体检与双模式交付](skills/ai-drama-script-studio/references/production-and-assets.md)：固定资产槽位、MiniMax-H3 音画直出纪律、红果 40× vs 10× 规则与送审导出规范。
+- [人物命名平衡与剧名/分集命名规范](skills/ai-drama-script-studio/references/naming-and-titling.md)：六大题材姓氏配额、配音防同音与龙套降噪、五大剧名型谱与精短反剧透分集命名。
 
 ## 隐私与许可证
 

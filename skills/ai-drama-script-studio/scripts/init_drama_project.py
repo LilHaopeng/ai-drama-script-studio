@@ -62,6 +62,8 @@ def build_templates(
     bible_doc = f"""# {title} · 季播总案与控算力资产表
 
 - 剧名：{title}
+- 备选剧名（跨型谱 3 风格，见 references/naming-and-titling.md）：[待填：1. 短意象/概念名 2–8 字；2. 半句悬念/反差短语 6–12 字；3. 按需附信息流强钩子（禁套“全家悔疯了”单一复句）]
+- 命名题材分支：[待填：分支 A 现代 / B 民国年代 / C 古代朝堂 / D 武侠仙侠 / E 科幻 / F 西幻]
 - 剧种模板：`{genre}` · {genre_label}
 - 立项入口：`{entry}` · {entry_label}
 - 目标制作后端：`{backend}` · {backend_label}
@@ -130,6 +132,7 @@ def build_templates(
     outline_doc = f"""# {title} · 分集爽点与卡点总纲
 
 - 剧种：`{genre}` ｜ 后端：`{backend}` ｜ 规划集数：{ep_display}
+- 分集命名口径：2–6 字画面锚点 / 4–8 字短钩子 / 纯集数（剧情梗概写进下表，严禁塞进 `第XXX集 集名`）
 
 ## 黄金前 3 集精细卡点
 

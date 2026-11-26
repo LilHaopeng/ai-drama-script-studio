@@ -2,7 +2,7 @@
 name: ai-drama-script-studio
 description: 专攻 AI 短剧、AI 漫剧与沙雕短剧的一体化编剧与改编工作室。支持「从零独立原创完整剧本」与「基于短篇/长篇小说或大纲改编剧本」双入口；开写前强制执行节奏与逻辑预匹配，内置三大剧种模板——MiniMax-H3 常规仿真人 AI 短剧（ai-drama）、高奇观多季 AI 漫剧（comic-drama）、高频反转沙雕短剧（shadiao）。涵盖控算力资产表（固定角色/场景/声音槽位）、黄金前3集与单集秒级卡点纲、视听分集剧本、按需分镜表、视听体检与纯净 DOCX/TXT 导出。默认简体中文。不用于纯文字小说正文撰写。
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # AI 短剧与沙雕短剧编剧工作室
@@ -22,9 +22,9 @@ metadata:
 | 阶段 | 适用场景 | 核心动作 | 必读参考 |
 |---|---|---|---|
 | `intake` | 仅有创意/选题简报，或刚丢进小说/大纲 | 判定入口（原创 / 短篇改编 / 长篇季播切片）与剧种（`ai-drama` / `comic-drama` / `shadiao`），执行**写前节奏与逻辑 5 问预匹配** | [adaptation-and-pacing.md](references/adaptation-and-pacing.md) |
-| `bible` | 逻辑与节奏方向已对齐 | 输出 `00_季播总案与资产表.md`：剧集总案、控算力固定资产表（`@CHAR / @LOC / @PROP / @VOICE`）与单剧声口切片 | [genre-templates.md](references/genre-templates.md)、[production-and-assets.md](references/production-and-assets.md) |
-| `outline` | 资产与总案已定，排整季分集 | 生成 `01_分集卡点纲.md`：黄金前 3 集精细卡点 + 全季每集冲突、情绪转折、爽点/笑点维度切换与集末硬钩子 | [adaptation-and-pacing.md](references/adaptation-and-pacing.md) |
-| `script` | 撰写完整视听分集剧本 | 逐集或按批撰写 `剧本/第XXX集_集名.md`（优先先试写第 1–3 集校准手感与时长，确认后批量推进） | [genre-templates.md](references/genre-templates.md) |
+| `bible` | 逻辑与节奏方向已对齐 | 输出 `00_季播总案与资产表.md`：剧集总案（含异构剧名备选）、控算力固定资产表（`@CHAR / @LOC / @PROP / @VOICE`，人物命名严守去 AI 味配额）与单剧声口切片 | [genre-templates.md](references/genre-templates.md)、[production-and-assets.md](references/production-and-assets.md)、[naming-and-titling.md](references/naming-and-titling.md) |
+| `outline` | 资产与总案已定，排整季分集 | 生成 `01_分集卡点纲.md`：黄金前 3 集精细卡点 + 全季每集冲突、情绪转折、爽点/笑点维度切换与集末硬钩子（分集名保持短促不剧透） | [adaptation-and-pacing.md](references/adaptation-and-pacing.md)、[naming-and-titling.md](references/naming-and-titling.md) |
+| `script` | 撰写完整视听分集剧本 | 逐集或按批撰写 `剧本/第XXX集_集名.md`（集名用 2–6 字画面锚点或 4–8 字短钩子，临场路人降噪；优先先试写第 1–3 集校准手感与时长，确认后批量推进） | [genre-templates.md](references/genre-templates.md)、[naming-and-titling.md](references/naming-and-titling.md) |
 | `storyboard` | 需要直接喂给 MiniMax-H3 / 即梦 / 火山剧创 | 按需将指定集数拆解为可执行的逐镜视听表（含原生对白、环境音、肌肉微表情与资产槽位引用） | [production-and-assets.md](references/production-and-assets.md) |
 | `check` & `export` | 剧本自检与交付送审/进组 | 运行 `lint_script.py` 体检时长、台词长度、不可拍心理词与切场成本；用 `export_drama.py` 导出纯净 `.docx` / `.txt` | [production-and-assets.md](references/production-and-assets.md) |
 

@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | **English**
 
-An all-in-one scriptwriting and novel-adaptation Agent Skill purpose-built for **AI Short Dramas (`ai-drama`, MiniMax-H3 photoreal/3D vertical dramas)**, **AI Comic Dramas (`comic-drama`, 2D/3D high-spectacle multi-season series)**, and **Comedy Short Dramas (`shadiao`, fast-cut dialogue memes & narrator-driven comedy animations)**. Supports both **original full-season scriptwriting from scratch** and **visual adaptation from short/long webnovels or outlines**. Current version: **v1.1.0**.
+An all-in-one scriptwriting and novel-adaptation Agent Skill purpose-built for **AI Short Dramas (`ai-drama`, MiniMax-H3 photoreal/3D vertical dramas)**, **AI Comic Dramas (`comic-drama`, 2D/3D high-spectacle multi-season series)**, and **Comedy Short Dramas (`shadiao`, fast-cut dialogue memes & narrator-driven comedy animations)**. Supports both **original full-season scriptwriting from scratch** and **visual adaptation from short/long webnovels or outlines**. Current version: **v1.2.0**.
 
 ## Key Capabilities
 
@@ -12,7 +12,7 @@ An all-in-one scriptwriting and novel-adaptation Agent Skill purpose-built for *
   - **`ai-drama` (MiniMax-H3 Photoreal / 3D Drama)**: 60–90s per episode (8–14 shots), tuned for MiniMax-H3's 5–15s native audio-visual lip-sync generation with strict **single-speaker-per-shot lip-sync isolation** and ≤18–22 CJK characters per shot line.
   - **`comic-drama` (2D/3D High-Spectacle Comic Drama)**: 60–120s per episode with on-screen HUD/system popups, power/rule visualization, and multi-season world hooks.
   - **`shadiao` (Comedy Short Drama Dual-Track)**: Supports both **Hongguo 40× fast-cut dialogue comedy** (2–4s shots, fixed expression swap codes `normal/shock/smirk/rage/cry/sweat` + HUD stickers, narration ≤20%) and **Douyin high-narration panda-meme comedy compilations**.
-- **Compute-Controlled Asset Bible & Voice Tuning Fork**: `00_季播总案与资产表.md` locks reusable `@CHAR-*`, `@LOC-*`, `@PROP-*`, and `@VOICE-*` slots to prevent face-drift and scene-bloat while anchoring each series with its own raw dialogue sample.
+- **Compute-Controlled Asset Bible, Anti-AI Naming & Punchy Episode Titles**: `00_季播总案与资产表.md` locks reusable `@CHAR-*`, `@LOC-*`, `@PROP-*`, and `@VOICE-*` slots while applying genre-calibrated surname quotas, TTS homophone collision checks, 3-style heterogeneous series title options, and concise 2–8 character visual episode titles ([naming-and-titling.md](skills/ai-drama-script-studio/references/naming-and-titling.md)).
 - **Dual-Format Clean Export (`production` vs. `clean-script`)**: `export_drama.py` exports either full production scripts (with visual/audio prompts and asset slots) or platform-submission `clean-script` files (automatically mapping `@CHAR_01` IDs from `series_bible.md` to real character names, stripping `[Visual Prompt]` / `[Audio Prompt]` / `[SFX]` blocks, and validating title compliance).
 
 ## Companion Studio Pipeline
